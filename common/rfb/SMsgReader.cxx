@@ -41,10 +41,6 @@ SMsgReader::SMsgReader(SMsgHandler* handler_, rdr::InStream* is_)
 {
 }
 
-SMsgReader::~SMsgReader()
-{
-}
-
 void SMsgReader::readClientInit()
 {
   bool shared = is->readU8();
@@ -53,7 +49,7 @@ void SMsgReader::readClientInit()
 
 void SMsgReader::readMsg()
 {
-  int msgType = is->readU8();
+  const int msgType = is->readU8();
   switch (msgType) {
   case msgTypeSetPixelFormat:
     readSetPixelFormat();
@@ -105,6 +101,12 @@ void SMsgReader::readMsg()
     break;
   case msgTypeUnixRelay:
     readUnixRelay();
+    break;
+  case msgTypeVideoEncoders:
+      readVideoEncodersRequest();
+      break;
+  case msgTypeKeepAlive:
+    readKeepAlive();
     break;
   default:
     fprintf(stderr, "unknown message type %d\n", msgType);
@@ -319,6 +321,11 @@ void SMsgReader::readFrameStats()
   handler->handleFrameStats(all, render);
 }
 
+void SMsgReader::readKeepAlive()
+{
+  handler->keepAlive();
+}
+
 void SMsgReader::readQEMUMessage()
 {
   int subType = is->readU8();
@@ -404,4 +411,14 @@ void SMsgReader::readUnixRelay()
   is->readBytes(buf, len);
 
   handler->unixRelay(name, buf, len);
+}
+
+void SMsgReader::readVideoEncodersRequest() const {
+    const auto len = is->readU8();
+    std::vector<int32_t> buf(len);
+
+    for (int i = 0; i < len; ++i)
+        buf[i] = is->readU32();
+
+    handler->videoEncodersRequest(buf);
 }

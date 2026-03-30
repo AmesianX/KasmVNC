@@ -21,7 +21,7 @@ include(CheckCSourceRuns)
 
 include(CMakeMacroLibtoolFile)
 
-project(kasmvnc)
+project(kasmvnc LANGUAGES C CXX)
 set(VERSION 0.9)
 
 # The RC version must always be four comma-separated numbers
@@ -74,13 +74,10 @@ set(CMAKE_CXX_FLAGS_MINSIZEREL "${CMAKE_CXX_FLAGS_MINSIZEREL} -UNDEBUG")
 
 # Make sure we get a sane C version
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu99")
+set(CMAKE_CXX_STANDARD 20)
 
 # Enable OpenMP
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fopenmp")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp")
-
-# Enable C++ 11
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++11")
 
 # Tell the compiler to be stringent
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wformat=2")
@@ -220,6 +217,8 @@ if(ENABLE_PAM)
 endif()
 set(HAVE_PAM ${ENABLE_PAM})
 
+option(DEBUG_FFMPEG "Debug ffmpeg" OFF)
+
 # Check for SSE2
 check_cxx_compiler_flag(-msse2 COMPILER_SUPPORTS_SSE2)
 
@@ -230,6 +229,10 @@ include_directories(${CMAKE_BINARY_DIR})
 
 include(cmake/StaticBuild.cmake)
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FFMPEG REQUIRED libavcodec libavformat libavutil libswscale libva)
+
+add_subdirectory(third_party)
 add_subdirectory(common)
 
 if(WIN32)
@@ -242,11 +245,12 @@ else()
 endif()
 
 if(ENABLE_NLS)
-  add_subdirectory(po)
+    add_subdirectory(po)
 endif()
 
-add_subdirectory(tests)
-
+if (TESTS)
+    add_subdirectory(tests)
+endif()
 
 include(cmake/BuildPackages.cmake)
 

@@ -35,6 +35,7 @@
 #include <rfb/Timer.h>
 #include <rfb/unixRelayLimits.h>
 
+#include <rfb/encoders/EncoderProbe.h>
 #include "kasmpasswd.h"
 
 namespace rfb {
@@ -43,7 +44,7 @@ namespace rfb {
   class VNCSConnectionST : public SConnection,
                            public Timer::Callback {
   public:
-    VNCSConnectionST(VNCServerST* server_, network::Socket* s, bool reverse);
+    VNCSConnectionST(VNCServerST* server_, network::Socket* s, const video_encoders::EncoderProbe &encoder_probe, bool reverse);
     virtual ~VNCSConnectionST();
 
     // Methods called from VNCServerST.  None of these methods ever knowingly
@@ -172,6 +173,7 @@ namespace rfb {
 
     virtual void sendStats(const bool toClient = true);
     virtual void handleFrameStats(rdr::U32 all, rdr::U32 render);
+    virtual void keepAlive();
 
     bool is_owner() const {
       bool read, write, owner;
@@ -219,12 +221,26 @@ namespace rfb {
         return server->sendWatermark;
     }
 
+    const std::string& getUsername() const { return clientUsername; }
+    void setUsername(const std::string& username) {
+      clientUsername = username.empty() ? "" : username;
+    }
+
+    // Returns connection time
+    time_t getConnectionTime() const { return connectionTime; }
+
+    // Returns access rights
+    AccessRights getAccessRights() const { return accessRights; }
   private:
     // SConnection callbacks
 
     // These methods are invoked as callbacks from processMsg().  Note that
     // none of these methods should call any of the above methods which may
     // delete the SConnectionST object.
+
+    // Connection timestamp when user was authenticated
+    time_t connectionTime;
+
 
     virtual void authSuccess();
     virtual void queryConnection(const char* userName);
@@ -243,12 +259,13 @@ namespace rfb {
     virtual void udpUpgrade(const char *resp);
     virtual void subscribeUnixRelay(const char *name);
     virtual void unixRelay(const char *name, const rdr::U8 *buf, const unsigned len);
+      void videoEncodersRequest(std::vector<int32_t> const &encoders) override;
     virtual void supportsLocalCursor();
     virtual void supportsFence();
     virtual void supportsContinuousUpdates();
     virtual void supportsLEDState();
 
-    virtual bool canChangeKasmSettings() const {
+    bool canChangeKasmSettings() const override {
         return (accessRights & (AccessPtrEvents | AccessKeyEvents)) ==
                (AccessPtrEvents | AccessKeyEvents);
     }
@@ -346,8 +363,9 @@ namespace rfb {
     bool frameTracking;
     uint32_t udpFramesSinceFull;
 
-    char unixRelaySubscriptions[MAX_UNIX_RELAYS][MAX_UNIX_RELAY_NAME_LEN];
+    char unixRelaySubscriptions[MAX_UNIX_RELAYS][MAX_UNIX_RELAY_NAME_LEN] = {};
     bool complainedAboutNoViewRights;
+    std::string clientUsername;
   };
 }
 #endif

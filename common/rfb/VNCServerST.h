@@ -26,15 +26,18 @@
 
 #include <sys/time.h>
 
-#include <rfb/EncCache.h>
-#include <rfb/SDesktop.h>
-#include <rfb/VNCServer.h>
-#include <rfb/LogWriter.h>
+#include <network/Socket.h>
 #include <rfb/Blacklist.h>
 #include <rfb/Cursor.h>
-#include <rfb/Timer.h>
-#include <network/Socket.h>
+#include <rfb/EncCache.h>
+#include <rfb/LogWriter.h>
+#include <rfb/SDesktop.h>
 #include <rfb/ScreenSet.h>
+#include <rfb/Timer.h>
+#include <rfb/VNCServer.h>
+#include <rfb/encoders/KasmVideoConstants.h>
+#include <rfb/encoders/EncoderProbe.h>
+#include <string>
 
 namespace rfb {
 
@@ -51,7 +54,7 @@ namespace rfb {
     // -=- Constructors
 
     //   Create a server exporting the supplied desktop.
-    VNCServerST(const char* name_, SDesktop* desktop_);
+    VNCServerST(const char* name_, SDesktop* desktop_, const video_encoders::EncoderProbe &encoder_probe);
     virtual ~VNCServerST();
 
 
@@ -148,7 +151,7 @@ namespace rfb {
     // the connection.
     enum queryResult { ACCEPT, REJECT, PENDING };
     struct QueryConnectionHandler {
-      virtual ~QueryConnectionHandler() {}
+      virtual ~QueryConnectionHandler() = default;
       virtual queryResult queryConnection(network::Socket* sock,
                                           const char* userName,
                                           char** reason) = 0;
@@ -199,6 +202,9 @@ namespace rfb {
 
     void refreshClients();
     void sendUnixRelayData(const char name[], const unsigned char *buf, const unsigned len);
+
+    enum UserActionType {Join, Leave};
+    void notifyUserAction(const VNCSConnectionST* newConnection, std::string& user_name, const UserActionType action_type);
 
   protected:
 
@@ -253,9 +259,13 @@ namespace rfb {
     Region getPendingRegion();
     const RenderedCursor* getRenderedCursor();
 
+    std::vector<SessionInfo>  getSessionUsers();
+    void updateSessionUsersList();
+
     void notifyScreenLayoutChange(VNCSConnectionST *requester);
 
     bool getComparerState();
+    bool checkClientOwnerships();
 
     void updateWatermark();
 
@@ -270,7 +280,7 @@ namespace rfb {
 
     Timer frameTimer;
 
-    int inotifyfd;
+    int inotify_fd{-1};
 
     network::GetAPIMessager *apimessager;
 
@@ -292,6 +302,7 @@ namespace rfb {
                           rdr::U8 &trackingFrameStats, char trackingClient[]);
 
     bool sendWatermark;
+    const video_encoders::EncoderProbe &encoder_probe;
   };
 
 };

@@ -25,6 +25,12 @@
 #include <rfb/TightJPEGEncoder.h>
 #include <rfb/TightConstants.h>
 
+#include <ctime>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+
+
 using namespace rfb;
 
 struct TightJPEGConfiguration {
@@ -70,11 +76,7 @@ TightJPEGEncoder::TightJPEGEncoder(SConnection* conn) :
 {
 }
 
-TightJPEGEncoder::~TightJPEGEncoder()
-{
-}
-
-bool TightJPEGEncoder::isSupported()
+bool TightJPEGEncoder::isSupported() const
 {
   if (!conn->cp.supportsEncoding(encodingTight))
     return false;

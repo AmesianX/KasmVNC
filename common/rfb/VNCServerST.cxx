@@ -48,8 +48,8 @@
 // otherwise blacklisted connections might be "forgotten".
 
 
-#include <assert.h>
-#include <stdlib.h>
+#include <cassert>
+#include <cstdlib>
 
 #include <network/GetAPI.h>
 #include <network/Udp.h>
@@ -65,14 +65,21 @@
 #include <rfb/Watermark.h>
 #include <rfb/util.h>
 #include <rfb/ledStates.h>
+#include <rfb/SMsgWriter.h>
 
 #include <rdr/types.h>
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <filesystem>
+#include <string_view>
 #include <sys/inotify.h>
 #include <unistd.h>
 #include <wordexp.h>
+
+#include <fmt/core.h>
+#include "encoders/KasmVideoConstants.h"
+#include "encoders/EncoderProbe.h"
 
 using namespace rfb;
 
@@ -81,6 +88,8 @@ LogWriter VNCServerST::connectionsLog("Connections");
 EncCache VNCServerST::encCache;
 
 void SelfBench();
+
+void benchmark(std::string_view, std::string_view);
 
 //
 // -=- VNCServerST Implementation
@@ -126,22 +135,41 @@ static void parseRegionPart(const bool percents, rdr::U16 &pcdest, int &dest,
   *inptr = ptr;
 }
 
-VNCServerST::VNCServerST(const char* name_, SDesktop* desktop_)
+VNCServerST::VNCServerST(const char* name_, SDesktop* desktop_, const video_encoders::EncoderProbe &encoder_probe_)
   : blHosts(&blacklist), desktop(desktop_), desktopStarted(false),
-    blockCounter(0), pb(0), blackedpb(0), ledState(ledUnknown),
-    name(strDup(name_)), pointerClient(0), clipboardClient(0),
-    comparer(0), cursor(new Cursor(0, 0, Point(), NULL)),
+    blockCounter(0), pb(nullptr), blackedpb(nullptr), ledState(ledUnknown),
+    name(strDup(name_)), pointerClient(nullptr), clipboardClient(nullptr),
+    comparer(nullptr), cursor(new Cursor(0, 0, Point(), nullptr)),
     renderedCursorInvalid(false),
-    queryConnectionHandler(0), keyRemapper(&KeyRemapper::defInstance),
+    queryConnectionHandler(nullptr), keyRemapper(&KeyRemapper::defInstance),
     lastConnectionTime(0), disableclients(false),
-    frameTimer(this), apimessager(NULL), trackingFrameStats(0),
-    clipboardId(0), sendWatermark(false)
+    frameTimer(this), apimessager(nullptr), trackingFrameStats(0),
+    clipboardId(0), sendWatermark(false), encoder_probe(encoder_probe_)
 {
-  lastUserInputTime = lastDisconnectTime = time(0);
-  slog.debug("creating single-threaded server %s", name.buf);
-  slog.info("CPU capability: SSE2 %s, AVX512f %s",
-            supportsSSE2() ? "yes" : "no",
-            supportsAVX512f() ? "yes" : "no");
+    auto to_string = [](const bool value) {
+        return value ? "yes" : "no";
+    };
+
+    lastUserInputTime = lastDisconnectTime = time(nullptr);
+    slog.debug("creating single-threaded server %s", name.buf);
+    slog.info("CPU capability: SSE2 %s, SSE4.1 %s, SSE4.2 %s, AVX512f %s",
+              to_string(cpu_info::has_sse2),
+              to_string(cpu_info::has_sse4_1),
+              to_string(cpu_info::has_sse4_2),
+              to_string(cpu_info::has_avx512f));
+
+    std::string available_accelerators{};
+    for (const auto encoder: encoder_probe.get_available_encoders()) {
+        if (KasmVideoEncoders::is_accelerated(encoder)) {
+            if (!available_accelerators.empty())
+                available_accelerators.append(", ");
+
+            available_accelerators.append(KasmVideoEncoders::to_string(encoder));
+        }
+    }
+
+    slog.info("Hardware video encoding acceleration capability: %s",
+        available_accelerators.empty() ? "none" : available_accelerators.c_str());
 
   DLPRegion.enabled = DLPRegion.percents = false;
 
@@ -198,7 +226,7 @@ VNCServerST::VNCServerST(const char* name_, SDesktop* desktop_)
       }
     }
 
-    DLPRegion.enabled = 1;
+    DLPRegion.enabled = true;
   }
 
   kasmpasswdpath[0] = '\0';
@@ -210,24 +238,31 @@ VNCServerST::VNCServerST(const char* name_, SDesktop* desktop_)
 
   if (kasmpasswdpath[0] && access(kasmpasswdpath, R_OK) == 0) {
     // Set up a watch on the password file
-    inotifyfd = inotify_init();
-    if (inotifyfd < 0)
+    inotify_fd = inotify_init();
+    if (inotify_fd < 0)
       slog.error("Failed to init inotify");
 
-    int flags = fcntl(inotifyfd, F_GETFL, 0);
-    fcntl(inotifyfd, F_SETFL, flags | O_NONBLOCK);
+    int flags = fcntl(inotify_fd, F_GETFL, 0);
+    fcntl(inotify_fd, F_SETFL, flags | O_NONBLOCK);
 
-    if (inotify_add_watch(inotifyfd, kasmpasswdpath, IN_CLOSE_WRITE | IN_DELETE_SELF) < 0)
+    if (inotify_add_watch(inotify_fd, kasmpasswdpath, IN_CLOSE_WRITE | IN_DELETE_SELF) < 0)
       slog.error("Failed to set watch");
   }
 
   trackingClient[0] = 0;
 
-  if (watermarkData)
-    sendWatermark = true;
+    if (watermarkData)
+        sendWatermark = true;
 
-  if (Server::selfBench)
-    SelfBench();
+    if (Server::selfBench)
+        SelfBench();
+
+    if (Server::benchmark[0]) {
+        const auto *file_name = Server::benchmark.getValueStr();
+        if (!std::filesystem::exists(file_name))
+            throw std::invalid_argument("Benchmarking video file does not exist");
+        benchmark(file_name, Server::benchmarkResults.getValueStr());
+    }
 }
 
 VNCServerST::~VNCServerST()
@@ -280,7 +315,7 @@ void VNCServerST::addSocket(network::Socket* sock, bool outgoing)
     lastConnectionTime = time(0);
   }
 
-  VNCSConnectionST* client = new VNCSConnectionST(this, sock, outgoing);
+  VNCSConnectionST* client = new VNCSConnectionST(this, sock, encoder_probe, outgoing);
   client->init();
 
   if (watermarkData)
@@ -756,6 +791,27 @@ void VNCServerST::stopDesktop()
   }
 }
 
+std::vector<SessionInfo> VNCServerST::getSessionUsers() {
+  std::vector<SessionInfo> users;
+
+  for ( auto client :  clients) {
+    if (!client->authenticated()) {
+      continue;
+    }
+    users.push_back(SessionInfo(client->getUsername(),client->getConnectionTime()));
+  }
+  return users;
+}
+
+void VNCServerST::updateSessionUsersList()
+{
+  auto sessionUsers = getSessionUsers();
+  if (!sessionUsers.empty()) {
+    std::string sessionUsersJson = formatUsersToJson(sessionUsers);
+    apimessager->mainUpdateSessionsInfo(sessionUsersJson);
+  }
+}
+
 int VNCServerST::authClientCount() {
   int count = 0;
   std::list<VNCSConnectionST*>::iterator ci;
@@ -1023,16 +1079,16 @@ void VNCServerST::writeUpdate()
 
   // Check if the password file was updated
   bool permcheck = false;
-  if (inotifyfd >= 0) {
+  if (inotify_fd >= 0) {
     char buf[256];
-    int ret = read(inotifyfd, buf, 256);
+    int ret = read(inotify_fd, buf, 256);
     int pos = 0;
     while (ret > 0) {
       const struct inotify_event * const ev = (struct inotify_event *) &buf[pos];
 
       if (ev->mask & IN_IGNORED) {
         // file was deleted, set new watch
-        if (inotify_add_watch(inotifyfd, kasmpasswdpath, IN_CLOSE_WRITE | IN_DELETE_SELF) < 0)
+        if (inotify_add_watch(inotify_fd, kasmpasswdpath, IN_CLOSE_WRITE | IN_DELETE_SELF) < 0)
           slog.error("Failed to set watch");
       }
 
@@ -1141,9 +1197,6 @@ void VNCServerST::writeUpdate()
   }
 }
 
-// checkUpdate() is called by clients to see if it is safe to read from
-// the framebuffer at this time.
-
 Region VNCServerST::getPendingRegion()
 {
   UpdateInfo ui;
@@ -1215,6 +1268,15 @@ void VNCServerST::notifyScreenLayoutChange(VNCSConnectionST* requester)
   }
 }
 
+bool VNCServerST::checkClientOwnerships() {
+  std::list<VNCSConnectionST*>::iterator i;
+  for (i = clients.begin(); i != clients.end(); i++) {
+    if ((*i)->is_owner())
+      return true;
+  }
+  return false;
+}
+
 bool VNCServerST::getComparerState()
 {
   if (rfb::Server::compareFB == 0)
@@ -1272,4 +1334,41 @@ void VNCServerST::sendUnixRelayData(const char name[],
       (*i)->sendUnixRelayData(name, buf, len);
     }
   }
+}
+
+void VNCServerST::notifyUserAction(const VNCSConnectionST* newConnection, std::string& username, const UserActionType actionType)
+{
+  if (username.empty()) {
+    username = "username_unavailable";
+  }
+
+  std::string actionTypeStr = actionType == Join ? "joined" : "left";
+  int notificationsSent = 0;
+
+  std::string msgNotification = "Sent user " +  actionTypeStr +  "   notification to client";
+  std::string errNotification = "Failed to send user " +  actionTypeStr +  "  notification to client: ";
+  std::string logNotification = "User " + username + " " + actionTypeStr + "  - sent notifications to ";
+
+  for (auto client : clients ) {
+    // Don't notify the connection that just joined, and only notify authenticated connections
+    if (client != newConnection && client->authenticated() &&
+        client->state() == SConnection::RFBSTATE_NORMAL) {
+      try {
+        if (actionType == Join) {
+          client->writer()->writeUserJoinedSession(username);
+        }
+        else {
+          client->writer()->writeUserLeftSession(username);
+        }
+        notificationsSent++;
+
+        slog.debug(msgNotification.c_str());
+      } catch (rdr::Exception& e) {
+         errNotification.append( e.str());
+        slog.error(errNotification.c_str());
+      }
+        }
+  }
+  logNotification.append( std::to_string(notificationsSent) + " clients");
+  slog.info(logNotification.c_str());
 }

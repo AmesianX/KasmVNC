@@ -29,10 +29,20 @@
 #include <rfb/Region.h>
 #include <rfb/Timer.h>
 #include <rfb/UpdateTracker.h>
-#include <rfb/util.h>
 
-#include <stdint.h>
+#include <atomic>
 #include <sys/time.h>
+#include <tbb/task_arena.h>
+
+#include "ScreenSet.h"
+#include "ffmpeg.h"
+#include <rfb/encoders/EncoderProbe.h>
+
+enum startRectOverride {
+  STARTRECT_NO_OVERRIDE,
+  STARTRECT_OVERRIDE_WEBP,
+  STARTRECT_OVERRIDE_KASMVIDEO,
+};
 
 namespace rfb {
   class SConnection;
@@ -49,8 +59,8 @@ namespace rfb {
 
   class EncodeManager: public Timer::Callback {
   public:
-    EncodeManager(SConnection* conn, EncCache *encCache);
-    ~EncodeManager();
+    EncodeManager(SConnection* conn, EncCache *encCache, const FFmpeg& ffmpeg, const video_encoders::EncoderProbe &encoder_probe_);
+    ~EncodeManager() override;
 
     void logStats();
 
@@ -60,11 +70,11 @@ namespace rfb {
     bool needsLosslessRefresh(const Region& req);
     void pruneLosslessRefresh(const Region& limits);
 
-    void writeUpdate(const UpdateInfo& ui, const PixelBuffer* pb,
+    void writeUpdate(const UpdateInfo& ui, const ScreenSet &layout, const PixelBuffer* pb,
                      const RenderedCursor* renderedCursor,
                      size_t maxUpdateSize = 2000);
 
-    void writeLosslessRefresh(const Region& req, const PixelBuffer* pb,
+    void writeLosslessRefresh(const Region& req,  const ScreenSet &layout, const PixelBuffer* pb,
                               const RenderedCursor* renderedCursor,
                               size_t maxUpdateSize);
 
@@ -72,10 +82,10 @@ namespace rfb {
         encodingTime = 0;
     };
 
-    unsigned getEncodingTime() const {
+    [[nodiscard]] unsigned getEncodingTime() const {
         return encodingTime;
     };
-    unsigned getScalingTime() const {
+    [[nodiscard]] unsigned getScalingTime() const {
         return scalingTime;
     };
 
@@ -93,38 +103,43 @@ namespace rfb {
     void doUpdate(bool allowLossy, const Region& changed,
                   const Region& copied, const Point& copy_delta,
                   const std::vector<CopyPassRect> &copypassed,
+                  const ScreenSet &layout,
                   const PixelBuffer* pb,
                   const RenderedCursor* renderedCursor);
+
+    bool updateVideo(const Region& changed, const ScreenSet &layout, const PixelBuffer* pb);
+
     void prepareEncoders(bool allowLossy);
 
     Region getLosslessRefresh(const Region& req, size_t maxUpdateSize);
 
     int computeNumRects(const Region& changed);
 
-    Encoder *startRect(const Rect& rect, int type, const bool trackQuality = true,
-                       const uint8_t isWebp = 0);
-    void endRect(const uint8_t isWebp = 0);
+    Encoder *startRect(const Rect& rect, int type, bool trackQuality = true,
+                       enum startRectOverride overrider = STARTRECT_NO_OVERRIDE);
+    void endRect(enum startRectOverride overrider = STARTRECT_NO_OVERRIDE);
 
     void writeCopyRects(const Region& copied, const Point& delta);
     void writeCopyPassRects(const std::vector<CopyPassRect>& copypassed);
     void writeSolidRects(Region *changed, const PixelBuffer* pb);
     void findSolidRect(const Rect& rect, Region *changed, const PixelBuffer* pb);
     void writeRects(const Region& changed, const PixelBuffer* pb,
-                    const struct timeval *start = NULL,
-                    const bool mainScreen = false);
+                    const struct timeval *start = nullptr,
+                    bool mainScreen = false);
     void checkWebpFallback(const struct timeval *start);
     void updateVideoStats(const std::vector<Rect> &rects, const PixelBuffer* pb);
 
-    void writeSubRect(const Rect& rect, const PixelBuffer *pb, const uint8_t type,
+    void writeSubRect(const Rect& rect, const PixelBuffer *pb, uint8_t type,
                       const Palette& pal, const std::vector<uint8_t> &compressed,
-                      const uint8_t isWebp);
+                      uint8_t isWebp);
 
     uint8_t getEncoderType(const Rect& rect, const PixelBuffer *pb, Palette *pal,
                            std::vector<uint8_t> &compressed, uint8_t *isWebp,
                            uint8_t *fromCache,
                            const PixelBuffer *scaledpb, const Rect& scaledrect,
                            uint32_t &ms) const;
-    virtual bool handleTimeout(Timer* t);
+
+    bool handleTimeout(Timer* t) override;
 
     bool checkSolidTile(const Rect& r, const rdr::U8* colourValue,
                         const PixelBuffer *pb);
@@ -142,8 +157,8 @@ namespace rfb {
 
     void updateQualities();
     void trackRectQuality(const Rect& rect);
-    unsigned getQuality(const Rect& rect) const;
-    unsigned scaledQuality(const Rect& rect) const;
+    [[nodiscard]] unsigned getQuality(const Rect& rect) const;
+    [[nodiscard]] unsigned scaledQuality(const Rect& rect) const;
 
   protected:
     // Preprocessor generated, optimised methods
@@ -166,6 +181,7 @@ namespace rfb {
 
   protected:
     SConnection *conn;
+    tbb::task_arena arena;
 
     std::vector<Encoder*> encoders;
     std::vector<int> activeEncoders;
@@ -199,23 +215,28 @@ namespace rfb {
     size_t curMaxUpdateSize;
     unsigned webpFallbackUs;
     unsigned webpBenchResult;
-    bool webpTookTooLong;
+    std::atomic<bool> webpTookTooLong{false};
     unsigned encodingTime;
     unsigned maxEncodingTime, framesSinceEncPrint;
     unsigned scalingTime;
+
+    const FFmpeg &ffmpeg;
+    bool ffmpeg_available;
+    bool video_mode_available{false};
+    const video_encoders::EncoderProbe &encoder_probe;
 
     EncCache *encCache;
 
     class OffsetPixelBuffer : public FullFramePixelBuffer {
     public:
-      OffsetPixelBuffer() {}
-      virtual ~OffsetPixelBuffer() {}
+      OffsetPixelBuffer() = default;
+      ~OffsetPixelBuffer() override = default;
 
       void update(const PixelFormat& pf, int width, int height,
                   const rdr::U8* data_, int stride);
 
     private:
-      virtual rdr::U8* getBufferRW(const Rect& r, int* stride);
+      rdr::U8* getBufferRW(const Rect& r, int* stride) override;
     };
   };
 

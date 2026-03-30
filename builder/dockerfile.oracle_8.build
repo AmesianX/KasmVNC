@@ -2,7 +2,7 @@ FROM oraclelinux:8
 
 ENV KASMVNC_BUILD_OS oracle
 ENV KASMVNC_BUILD_OS_CODENAME 8
-ENV XORG_VER 1.20.10
+ENV XORG_VER 1.20.11
 
 # Install from stock repos
 RUN \
@@ -11,10 +11,13 @@ RUN \
   dnf install -y \
     bzip2-devel \
     ca-certificates \
+    ninja-build \
     cmake \
+    nasm \
     dnf-plugins-core \
     gcc \
     gcc-c++ \
+    gcc-toolset-14 \
     git \
     gnutls-devel \
     libjpeg-turbo-devel \
@@ -48,16 +51,19 @@ RUN dnf install -y \
   xorg-x11-xtrans-devel \
   libXrandr-devel \
   libXtst-devel \
-  libXcursor-devel
+  libXcursor-devel \
+  libSM-devel \
+  libva-devel
 
 ENV SCRIPTS_DIR=/tmp/scripts
-COPY builder/scripts $SCRIPTS_DIR
-RUN $SCRIPTS_DIR/build-webp
-RUN $SCRIPTS_DIR/build-libjpeg-turbo
+ENV PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:${PKG_CONFIG_PATH:-/opt/rh/gcc-toolset-14/root/usr/lib64/pkgconfig}
 
-RUN useradd -m docker && echo "docker:docker" | chpasswd
+COPY builder/scripts $SCRIPTS_DIR
+RUN echo "source /opt/rh/gcc-toolset-14/enable" > /etc/profile.d/gcc-toolset.sh && \
+    $SCRIPTS_DIR/build-deps.sh  && \
+    useradd -m docker && echo "docker:docker" | chpasswd
 
 COPY --chown=docker:docker . /src/
 
 USER docker
-ENTRYPOINT ["/src/builder/build.sh"]
+ENTRYPOINT ["bash", "-l", "-c", "/src/builder/build.sh"]

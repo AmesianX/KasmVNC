@@ -478,7 +478,7 @@ See the GnuTLS manual for possible values. Default is \fBNORMAL\fP.
 .TP
 .B \-BlacklistThreshold \fIcount\fP
 The number of unauthenticated connection attempts allowed from any individual
-host before that host is black-listed.  Default is 5.
+host before that host is black-listed.  Default is 5. Set to 0 to disable.
 .
 .TP
 .B \-BlacklistTimeout \fIseconds\fP
@@ -574,6 +574,69 @@ When \fBNoClipboard\fP parameter is set, allowing override of \fBSendCutText\fP
 and \fBAcceptCutText\fP has no effect.
 
 Default is \fBdesktop,AcceptPointerEvents,SendCutText,AcceptCutText,SendPrimary,SetPrimary\fP.
+.
+TP
+.B -Benchmark <video_file>
+Run the built-in benchmarking routines on the specified video file and exit.
+When this option is used, benchmarking results can be saved to a file specified by the \fB-BenchmarkResults\fP option; otherwise, the results are saved to \fBBenchmark.xml\fP by default.
+.
+.TP
+.B -BenchmarkResults <results_file.xml>
+Save the benchmarking results to the specified file.
+Use this option together with \fB-Benchmark\fP to output the report to a custom file.
+.
+.TP
+.B \-DetectScrolling
+Try to detect scrolled sections in a changed area.
+
+Detect vertical scrolling on the screen and then use copyRects instead of
+sending jpeg.  A copy rect tells the client to copy a section of the screen and
+paste it somewhere else. This significantly reduces bandwidth usage when someone
+is scrolling down a page.
+.
+.TP
+.B \-DetectHorizontal
+With \fB-DetectScrolling\fP enabled, try to detect horizontal scrolls too, not just vertical.
+.
+.TP
+.B \-ScrollDetectLimit
+At least this % of the screen must change for scroll detection to happen, default 25.
+
+.TP
+.B \-videoCodec \fIcodec\fP
+Specifies the video codec to use for video streaming mode. Valid options are:
+.B auto
+(automatic selection),
+.B h264
+(H.264/AVC software encoding),
+.B h264_vaapi
+(H.264/AVC with VA-API hardware acceleration),
+.B avc
+(H.264/AVC software encoding),
+.B avc_vaapi
+(H.264/AVC with VA-API hardware acceleration),
+.B h265
+(H.265/HEVC software encoding),
+.B h265_vaapi
+(H.265/HEVC with VA-API hardware acceleration),
+.B hevc
+(H.265/HEVC software encoding),
+.B hevc_vaapi
+(H.265/HEVC with VA-API hardware acceleration),
+.B av1
+(AV1 software encoding),
+.B av1_vaapi
+(AV1 with VA-API hardware acceleration).
+Default is auto.
+
+.TP
+.B \-VideoQualityCRFCQP \fIquality\fP
+Sets the video quality level for video streaming mode using CRF (Constant Rate Factor) or CQP (Constant Quantization Parameter) depending on the codec. Lower values generally produce higher quality output. The valid range and optimal values depend on the selected codec but should be within 0-63. The default value is 17.
+
+.TP
+.B \-GroupOfPicture \fIgop\fP
+Sets the Group of Pictures (GOP) size for video streaming mode. This parameter controls how often keyframes are inserted in the video stream. A smaller GOP size results in more frequent keyframes, which can improve quality and error recovery but may increase bandwidth usage. The value should be a positive integer.
+
 
 .SH USAGE WITH INETD
 By configuring the \fBinetd\fP(1) service appropriately, Xvnc can be launched

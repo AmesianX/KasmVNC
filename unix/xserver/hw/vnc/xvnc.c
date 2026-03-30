@@ -94,9 +94,8 @@ from the X Consortium.
 #undef VENDOR_RELEASE
 #undef VENDOR_STRING
 #include "version-config.h"
-#include "site.h"
 
-#define XVNCVERSION "KasmVNC 1.2.0"
+#define XVNCVERSION "KasmVNC 1.3.4"
 #define XVNCCOPYRIGHT ("Copyright (C) 1999-2018 KasmVNC Team and many others (see README.me)\n" \
                        "See http://kasmweb.com for information on KasmVNC.\n")
 
@@ -164,7 +163,7 @@ const char *driNode = NULL;
 static Bool displaySpecified = FALSE;
 static char displayNumStr[16];
 
-static int vncVerbose = DEFAULT_LOG_VERBOSITY;
+static int vncVerbose = 0;
 
 int unixrelays[MAX_UNIX_RELAYS];
 char unixrelaynames[MAX_UNIX_RELAYS][MAX_UNIX_RELAY_NAME_LEN];
@@ -283,8 +282,13 @@ vncPrintBanner(void)
     ErrorF("\nXvnc %s%s - built %s\n%s", XVNCVERSION,
            sizeof(XVNCEXTRAVERSION) > 2 ? XVNCEXTRAVERSION : "",
            buildtime, XVNCCOPYRIGHT);
+    // VENDOR_STRING was removed in 21
+    #ifdef VENDOR_STRING
     ErrorF("Underlying X server release %d, %s\n\n", VENDOR_RELEASE,
            VENDOR_STRING);
+    #else
+    ErrorF("Underlying X server release %d\n\n", VENDOR_RELEASE);
+    #endif
 }
 
 static void
@@ -581,6 +585,9 @@ ddxProcessArgument(int argc, char *argv[], int i)
         fail_unless_args(argc, i, 1);
         ++i;
         driNode = argv[i];
+        if (!vncSetParam("drinode", driNode))
+            ErrorF("Could not set drinode %s\n", driNode);
+
         return 2;
     }
 

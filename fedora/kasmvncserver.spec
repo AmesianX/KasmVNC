@@ -1,5 +1,5 @@
 Name:           kasmvncserver
-Version:        1.2.0
+Version:        1.3.4
 Release:        1%{?dist}
 Summary:        VNC server accessible from a web browser
 
@@ -7,7 +7,7 @@ License: GPLv2+
 URL: https://github.com/kasmtech/KasmVNC
 
 BuildRequires: rsync
-Requires: xorg-x11-xauth, xkeyboard-config, xkbcomp, openssl, perl, perl-Switch, perl-YAML-Tiny, perl-Hash-Merge-Simple, perl-Scalar-List-Utils, perl-List-MoreUtils, perl-Try-Tiny, perl-DateTime-TimeZone, mesa-libgbm, libxshmfence
+Requires: xorg-x11-xauth, xkeyboard-config, xkbcomp, openssl, perl, perl-Switch, perl-YAML-Tiny, perl-Hash-Merge-Simple, perl-Scalar-List-Utils, perl-List-MoreUtils, perl-Try-Tiny, perl-DateTime-TimeZone, mesa-libgbm, libxshmfence, hostname, crypto-policies-scripts
 Conflicts: tigervnc-server, tigervnc-server-minimal
 
 %description
@@ -28,8 +28,8 @@ WARNING: this package requires EPEL.
 %install
 rm -rf $RPM_BUILD_ROOT
 
-TARGET_OS=$(lsb_release -is | tr '[:upper:]' '[:lower:]')
-TARGET_OS_CODENAME=$(lsb_release -cs | tr '[:upper:]' '[:lower:]')
+TARGET_OS=$KASMVNC_BUILD_OS
+TARGET_OS_CODENAME=$KASMVNC_BUILD_OS_CODENAME
 TARBALL=$RPM_SOURCE_DIR/kasmvnc.${TARGET_OS}_${TARGET_OS_CODENAME}.tar.gz
 TAR_DATA=$(mktemp -d)
 tar -xzf "$TARBALL" -C "$TAR_DATA"
@@ -50,6 +50,7 @@ cp $SRC_BIN/vncconfig $DESTDIR/usr/bin;
 cp $SRC_BIN/kasmvncpasswd $DESTDIR/usr/bin;
 cp $SRC_BIN/kasmxproxy $DESTDIR/usr/bin;
 cp -r $SRC/lib/kasmvnc/ $DESTDIR/usr/lib/kasmvncserver
+cp -r $SRC/lib/systemd/ $DESTDIR/usr/lib/
 cd $DESTDIR/usr/bin && ln -s kasmvncpasswd vncpasswd;
 cp -r $SRC/share/doc/kasmvnc*/* $DESTDIR/usr/share/doc/kasmvncserver/
 rsync -r --links --safe-links --exclude '.git*' --exclude po2js --exclude xgettext-html \
@@ -69,12 +70,45 @@ cp $SRC/share/man/man1/vncpasswd.1 $DST_MAN;
 cp $SRC/share/man/man1/kasmxproxy.1 $DST_MAN;
 cd $DST_MAN && ln -s vncpasswd.1 kasmvncpasswd.1;
 
+%preun
+stop_vncserver_systemd_services_for_all_logged_in_users() {
+  for session in $(list_user_sessions); do
+    stop_user_services "$session"
+  done
+}
+
+list_user_sessions() {
+  loginctl list-sessions --no-legend | awk '{print $1}'
+}
+
+stop_user_services() {
+  local session="$1"
+
+  for service in $(list_active_services); do
+    systemctl --user --machine=$(systemd_user_from_session "$session") stop "$service" || true
+  done
+}
+
+systemd_user_from_session() {
+  local session="$1"
+
+  echo $(loginctl show-session "$session" -p Name --value)@
+}
+
+list_active_services() {
+  systemctl --user --machine=$(systemd_user_from_session "$session") \
+    list-units --type=service --state=active --plain --no-legend | \
+    awk '{ print $1 }' | grep kasmvncserver
+}
+
+stop_vncserver_systemd_services_for_all_logged_in_users
 
 %files
 %config(noreplace) /etc/kasmvnc
 
 /usr/bin/*
 /usr/lib/kasmvncserver
+/usr/lib/systemd/user/kasmvncserver@.service
 /usr/share/man/man1/*
 /usr/share/perl5/KasmVNC
 /usr/share/kasmvnc
@@ -83,6 +117,33 @@ cd $DST_MAN && ln -s vncpasswd.1 kasmvncpasswd.1;
 %doc /usr/share/doc/kasmvncserver/README.md
 
 %changelog
+* Thu Mar 20 2025 KasmTech <info@kasmweb.com> - 1.3.4-1
+- Add configuration key network.udp.payload_size.
+- Remove support for distro versions that reached end-of-life.
+- Add missing dependency on hostname.
+- Remove webpack to reduce security vulnerabilities.
+- Special characters in filenames are now properly escaped, preventing invalid JSON.
+* Fri Oct 25 2024 KasmTech <info@kasmweb.com> - 1.3.3-1
+- Allow disabling IP blacklist
+- Downloads API for detailed file downloads information
+* Tue Sep 24 2024 KasmTech <info@kasmweb.com> - 1.3.2-1
+- Disable seamless clipboard on Firefox by default, due to the Firefox overlaying a Paste menu over the canvas.
+- Fixed CVE-2024-38449, directory traversal bug in built-in web server.
+- Allow for larger header sizes, up to 16k. Provide better logging and handling for requests that contain HTTP headers that are larger than the 16k limit.
+- Fixed memory leak in kasmproxy.
+- Fixed mime types of downloads to ensure the browser interprets them as downloads.
+* Tue Mar 12 2024 KasmTech <info@kasmweb.com> - 1.3.1-1
+- Fix exception thrown on Firefox 124 and higher
+- Fix artifacts on high resolution secondary screens
+- Fixes for touch support on primary and secondary screens
+- Fix for Oculus keyboard input
+* Mon Feb 05 2024 KasmTech <info@kasmweb.com> - 1.3.0-1
+- Multi-monitor support.
+- Increased performance with watermark enabled.
+- Added support for Fedora 39 and Alpine 319.
+- Allow special characters in usernames.
+- Better logging of client settings when client connects or changes settings.
+- Add support for rotation of text-based watermark.
 * Fri Aug 25 2023 KasmTech <info@kasmweb.com> - 1.2.0-1
 - Add support for Unix relays for bidirectional communication between noVNC
   and containerized applications.
@@ -134,4 +195,11 @@ cd $DST_MAN && ln -s vncpasswd.1 kasmvncpasswd.1;
   make_self_signed_certificate
 
 %postun
-  rm -f /etc/pki/tls/private/kasmvnc.pem
+  is_uninstall=0
+
+  if [ "$1" == 0 ]; then
+    is_uninstall=1
+  fi
+  if [ "$is_uninstall" = 1 ]; then
+    rm -f /etc/pki/tls/private/kasmvnc.pem
+  fi

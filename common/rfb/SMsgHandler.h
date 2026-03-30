@@ -61,6 +61,7 @@ namespace rfb {
 
     virtual void sendStats(const bool toClient = true) = 0;
     virtual void handleFrameStats(rdr::U32 all, rdr::U32 render) = 0;
+    virtual void keepAlive();
 
     virtual bool canChangeKasmSettings() const = 0;
 
@@ -100,6 +101,7 @@ namespace rfb {
 
     virtual void subscribeUnixRelay(const char *name) = 0;
     virtual void unixRelay(const char *name, const rdr::U8 *buf, const unsigned len) = 0;
+      virtual void videoEncodersRequest(const std::vector<int32_t> &encoders) = 0;
 
     ConnParams cp;
   };

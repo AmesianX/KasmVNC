@@ -1,6 +1,6 @@
 # KasmVNC - Linux Web Remote Desktop
 
-<a href="https://kasmweb.com"><img src="https://kasm-static-content.s3.amazonaws.com/logo_kasm.png" width="300"><a/>
+<a href="https://kasmweb.com"><img src="https://5856039.fs1.hubspotusercontent-na1.net/hubfs/5856039/kasmvnc_logo.png" width="300"><a/>
 
 KasmVNC provides remote web-based access to a Desktop or application. While VNC is in the name, KasmVNC differs from other VNC variants such as TigerVNC, RealVNC, and TurboVNC. KasmVNC has broken from the RFB specification which defines VNC, in order to support modern technologies and increase security. KasmVNC is accessed by users from any modern browser and does not support legacy VNC viewer applications. KasmVNC uses a modern YAML based configuration at the server and user level, allowing for ease of management.
 
@@ -10,7 +10,7 @@ KasmVNC provides remote web-based access to a Desktop or application. While VNC 
 
 **Do not use the README from the master branch**, unless you are compiling KasmVNC yourself from the tip of master. Use the documentation for your specific release.
 
-  - [KasmVNC 1.0.0 Documentation](https://www.kasmweb.com/kasmvnc/docs/1.0.0/index.html)
+  - [KasmVNC Documentation](https://www.kasmweb.com/kasmvnc/docs/latest/index.html)
 
   For beta releases prior to version 1.0.0, use the README in this github project on the tagged commit for that release.
 
@@ -27,7 +27,7 @@ wget <package_url>
 sudo apt-get install ./kasmvncserver_*.deb
 
 # Add your user to the ssl-cert group
-sudo addgroup $USER ssl-cert
+sudo adduser $USER ssl-cert
 ```
 
 ### Oracle 8
@@ -46,21 +46,6 @@ sudo dnf localinstall ./kasmvncserver_*.rpm
 sudo usermod -a -G kasmvnc-cert $USER
 ```
 
-### CentOS 7
-
-```sh
-# Please choose the package for your distro here (under Assets):
-# https://github.com/kasmtech/KasmVNC/releases
-wget <package_url>
-
-# Ensure KasmVNC dependencies are available
-sudo yum install epel-release
-
-sudo yum install ./kasmvncserver_*.rpm
-
-# Add your user to the kasmvnc-cert group
-sudo usermod -a -G kasmvnc-cert $USER
-```
 
 ## Getting Started
 
@@ -84,6 +69,21 @@ vncserver -list
 
 # Kill the VNC session with display ID :2
 vncserver -kill :2
+```
+
+### Optional systemd auto-start on boot
+```sh
+# Optionally use systemd to start KasmVNC on boot.
+sudo reboot # Needed for systemd to pick up $USER's ssl-cert or kasmvnc-cert group
+systemctl --user enable kasmvncserver@:1 # :1 is Xorg DISPLAY number.
+systemctl --user start kasmvncserver@:1
+
+# You can run multiple KasmVNC instances via systemd by passing a different
+# DISPLAY number:
+# systemctl --user enable kasmvncserver@:2
+# systemctl --user start kasmvncserver@:2
+# systemctl --user enable kasmvncserver@:3
+# systemctl --user start kasmvncserver@:3
 ```
 
 ## Configuration
@@ -250,7 +250,7 @@ command_line:
     - Keyboard input rate limit
     - Screen region selection
   - Deb packages for Debian, Ubuntu, and Kali Linux included in release.
-  - RPM packages for CentOS, Oracle, OpenSUSE, Fedora. RPM packages are currently not updatable and not released, though you can build and install them. See build documentation.
+  - RPM packages for Oracle, OpenSUSE, Fedora. RPM packages are currently not updatable and not released, though you can build and install them. See build documentation.
   - Web [API](https://github.com/kasmtech/KasmVNC/wiki/API) added for remotely controlling and getting information from KasmVNC
   - Multi-User support with permissions that can be changed via the API
   - Web UI uses a webpack for faster load times.
@@ -269,4 +269,6 @@ Future Goals:
 See the [builder/README.md](https://github.com/kasmtech/KasmVNC/blob/master/builder/README.md). We containerize our build systems to ensure highly repeatable builds.
 
 ### License and Acknowledgements
-See the [LICENSE.TXT](https://github.com/kasmtech/KasmVNC/blob/master/LICENSE.TXT) and [ACKNOWLEDGEMENTS.MD](https://github.com/kasmtech/KasmVNC/blob/master/LICENSE.TXT)
+See the [LICENSE.TXT](https://github.com/kasmtech/KasmVNC/blob/master/LICENSE.TXT) and [ACKNOWLEDGEMENTS.md](https://github.com/kasmtech/KasmVNC/blob/master/ACKNOWLEDGEMENTS.md)
+
+This project is tested with BrowserStack.

@@ -36,48 +36,49 @@
 #define XK_MISCELLANY
 #define XK_XKB_KEYS
 #include <rfb/keysymdef.h>
-#include <ctype.h>
-#include <stdlib.h>
-#include <stdint.h>
+#include <cctype>
+#include <cstdlib>
+#include <cstdint>
 #include <wordexp.h>
 
+#include "encoders/EncoderProbe.h"
 #include "kasmpasswd.h"
 
 using namespace rfb;
 
 static LogWriter vlog("VNCSConnST");
 
-static Cursor emptyCursor(0, 0, Point(0, 0), NULL);
+static Cursor emptyCursor(0, 0, Point(0, 0), nullptr);
+
+namespace {
+const rdr::U32 CLIENT_KEEPALIVE_KEYSYM = 1;
+}
 
 extern rfb::BoolParameter disablebasicauth;
 
 extern "C" char unixrelaynames[MAX_UNIX_RELAYS][MAX_UNIX_RELAY_NAME_LEN];
 
-VNCSConnectionST::VNCSConnectionST(VNCServerST* server_, network::Socket *s,
+VNCSConnectionST::VNCSConnectionST(VNCServerST* server_, network::Socket *s, const video_encoders::EncoderProbe &encoder_probe,
                                    bool reverse)
   : upgradingToUdp(false), sock(s), reverseConnection(reverse),
     inProcessMessages(false),
     pendingSyncFence(false), syncFence(false), fenceFlags(0),
-    fenceDataLen(0), fenceData(NULL), congestionTimer(this),
+    fenceDataLen(0), fenceData(nullptr), congestionTimer(this),
     losslessTimer(this), kbdLogTimer(this), binclipTimer(this),
     server(server_), updates(false),
     updateRenderedCursor(false), removeRenderedCursor(false),
-    continuousUpdates(false), encodeManager(this, &server_->encCache),
+    continuousUpdates(false), encodeManager(this, &VNCServerST::encCache, FFmpeg::get(), encoder_probe),
     needsPermCheck(false), pointerEventTime(0),
     clientHasCursor(false),
-    accessRights(AccessDefault), startTime(time(0)), frameTracking(false),
-    udpFramesSinceFull(0), complainedAboutNoViewRights(false)
+    accessRights(AccessDefault), startTime(time(nullptr)), frameTracking(false),
+    udpFramesSinceFull(0), complainedAboutNoViewRights(false), clientUsername("username_unavailable")
 {
   setStreams(&sock->inStream(), &sock->outStream());
   peerEndpoint.buf = sock->getPeerEndpoint();
   VNCServerST::connectionsLog.write(1,"accepted: %s", peerEndpoint.buf);
 
   memset(bstats_total, 0, sizeof(bstats_total));
-  gettimeofday(&connStart, NULL);
-
-  unsigned i;
-  for (i = 0; i < MAX_UNIX_RELAYS; i++)
-    unixRelaySubscriptions[i][0] = '\0';
+  gettimeofday(&connStart, nullptr);
 
   // Check their permissions, if applicable
   kasmpasswdpath[0] = '\0';
@@ -89,9 +90,11 @@ VNCSConnectionST::VNCSConnectionST(VNCServerST* server_, network::Socket *s,
 
   user[0] = '\0';
   const char *at = strrchr(peerEndpoint.buf, '@');
-  if (at && at - peerEndpoint.buf > 1 && at - peerEndpoint.buf < USERNAME_LEN) {
-    memcpy(user, peerEndpoint.buf, at - peerEndpoint.buf);
-    user[at - peerEndpoint.buf] = '\0';
+
+  const auto offset = at - peerEndpoint.buf;
+  if (at && offset > 1 && static_cast<size_t>(offset) < USERNAME_LEN) {
+    memcpy(user, peerEndpoint.buf, offset);
+    user[offset] = '\0';
   }
 
   bool read, write, owner;
@@ -107,10 +110,12 @@ VNCSConnectionST::VNCSConnectionST(VNCServerST* server_, network::Socket *s,
 
   // Configure the socket
   setSocketTimeouts();
-  lastEventTime = time(0);
-  gettimeofday(&lastRealUpdate, NULL);
-  gettimeofday(&lastClipboardOp, NULL);
-  gettimeofday(&lastKeyEvent, NULL);
+  lastEventTime = time(nullptr);
+  gettimeofday(&lastRealUpdate, nullptr);
+  gettimeofday(&lastClipboardOp, nullptr);
+  gettimeofday(&lastKeyEvent, nullptr);
+
+  cp.available_encoders = encoder_probe.get_available_encoders();
 
   server->clients.push_front(this);
 
@@ -140,7 +145,7 @@ VNCSConnectionST::~VNCSConnectionST()
   }
 
   if (server->pointerClient == this)
-    server->pointerClient = 0;
+    server->pointerClient = nullptr;
 
   // Remove this client from the server
   server->clients.remove(this);
@@ -176,7 +181,20 @@ void VNCSConnectionST::close(const char* reason)
     vlog.debug("second close: %s (%s)", peerEndpoint.buf, reason);
 
   if (authenticated()) {
-      server->lastDisconnectTime = time(0);
+      server->lastDisconnectTime = time(nullptr);
+
+      // First update the client state to CLOSING to ensure it's not included in user lists
+      setState(RFBSTATE_CLOSING);
+
+      // Notify other clients about the user leaving
+      server->notifyUserAction(this, clientUsername, VNCServerST::Leave);
+      vlog.info("Notifying other clients that user '%s' left: %s",
+                clientUsername.c_str(), reason ? reason : "connection closed");
+
+      if (server->apimessager)
+      {
+        server->updateSessionUsersList();
+      }
   }
 
   try {
@@ -190,11 +208,12 @@ void VNCSConnectionST::close(const char* reason)
     vlog.error("Failed to flush remaining socket data on close: %s", e.str());
   }
 
-  // Just shutdown the socket and mark our state as closing.  Eventually the
-  // calling code will call VNCServerST's removeSocket() method causing us to
-  // be deleted.
+  // Just shutdown the socket and mark our state as closing if not already done.
+  // Eventually the calling code will call VNCServerST's removeSocket() method
+  // causing us to be deleted.
   sock->shutdown();
-  setState(RFBSTATE_CLOSING);
+  if (state() != RFBSTATE_CLOSING)
+    setState(RFBSTATE_CLOSING);
 }
 
 
@@ -526,7 +545,7 @@ int VNCSConnectionST::checkIdleTimeout()
   if (idleTimeout == 0) return 0;
   if (state() != RFBSTATE_NORMAL && idleTimeout < 15)
     idleTimeout = 15; // minimum of 15 seconds while authenticating
-  time_t now = time(0);
+  time_t now = time(nullptr);
   if (now < lastEventTime) {
     // Someone must have set the time backwards.  Set lastEventTime so that the
     // idleTimeout will count from now.
@@ -543,6 +562,13 @@ int VNCSConnectionST::checkIdleTimeout()
     return secsToMillis(idleTimeout);
   }
   if (timeLeft <= 0) {
+    if (cp.supportsDisconnectNotify) {
+      try {
+        writer()->writeDisconnectNotify(true, "Idle timeout");
+      } catch (rdr::Exception& e) {
+        vlog.debug("Failed to send disconnect notice: %s", e.str());
+      }
+    }
     close("Idle timeout");
     return 0;
   }
@@ -607,7 +633,7 @@ bool VNCSConnectionST::needRenderedCursor()
       !cp.supportsLocalCursor && !cp.supportsLocalXCursor)
     return true;
   if (!server->cursorPos.equals(pointerEventPos) &&
-      (time(0) - pointerEventTime) > 0)
+      (time(nullptr) - pointerEventTime) > 0)
     return true;
 
   return false;
@@ -631,6 +657,8 @@ void VNCSConnectionST::approveConnectionOrClose(bool accept,
 void VNCSConnectionST::authSuccess()
 {
   lastEventTime = time(0);
+  connectionTime = time(0); // Record when the user connected
+  vlog.info("User %s connected at %ld", clientUsername.c_str(), connectionTime);
 
   server->startDesktop();
 
@@ -649,11 +677,27 @@ void VNCSConnectionST::authSuccess()
 
   // - Mark the entire display as "dirty"
   updates.add_changed(server->pb->getRect());
-  startTime = time(0);
+  startTime = time(nullptr);
+
+  if (clientUsername.empty())
+  {
+    setUsername(get_default_name(sock->getPeerAddress()));
+  }
+    vlog.info("Authentication successful for user: %s", clientUsername.c_str());
 }
 
 void VNCSConnectionST::queryConnection(const char* userName)
 {
+  if (userName && strlen(userName) > 0) {
+    setUsername(userName);
+    vlog.info("Setting username for connection: %s", userName);
+  } else {
+    // Generate a default username based on connection info
+    setUsername(get_default_name(sock->getPeerAddress()));
+
+    vlog.info("Generated username: %s", clientUsername.c_str());
+  }
+
   // - Authentication succeeded - clear from blacklist
   CharArray name; name.buf = sock->getPeerAddress();
   server->blHosts->clearBlackmark(name.buf);
@@ -708,6 +752,15 @@ void VNCSConnectionST::clientInit(bool shared)
     }
   }
   SConnection::clientInit(shared);
+  if (shared && authenticated()) {
+    server->notifyUserAction(this, clientUsername, VNCServerST::Join);
+    vlog.info("Notifying other clients that user '%s' joined the shared session",
+              clientUsername.c_str());
+  }
+
+  if (server->apimessager && authenticated()) {
+   server->updateSessionUsersList();
+  }
 }
 
 void VNCSConnectionST::setPixelFormat(const PixelFormat& pf)
@@ -819,6 +872,10 @@ public:
 // multiple down events (for autorepeat), but only allow a single up event.
 void VNCSConnectionST::keyEvent(rdr::U32 keysym, rdr::U32 keycode, bool down) {
   rdr::U32 lookup;
+
+  if (keycode == 0 && keysym == CLIENT_KEEPALIVE_KEYSYM) {
+    return;
+  }
 
   lastEventTime = time(0);
   server->lastUserInputTime = lastEventTime;
@@ -996,6 +1053,8 @@ void VNCSConnectionST::setDesktopSize(int fb_width, int fb_height,
                                       const ScreenSet& layout)
 {
   unsigned int result;
+
+  server->sendWatermark = true;
 
   if (!(accessRights & AccessSetDesktopSize)) goto justnotify;
   if (!rfb::Server::acceptSetDesktopSize) goto justnotify;
@@ -1462,7 +1521,7 @@ void VNCSConnectionST::writeDataUpdate()
 
   // Does the client need a server-side rendered cursor?
 
-  cursor = NULL;
+  cursor = nullptr;
   if (needRenderedCursor()) {
     Rect renderedCursorRect;
 
@@ -1501,7 +1560,7 @@ void VNCSConnectionST::writeDataUpdate()
       msSince(&lastRealUpdate) < losslessThreshold))
     return;
 
-  writeRTTPing();
+  // writeRTTPing();
 
   // FIXME: If continuous updates aren't used then the client might
   //        be slower than frameRate in its requests and we could
@@ -1512,9 +1571,9 @@ void VNCSConnectionST::writeDataUpdate()
                   server->msToNextUpdate() / 1000;
 
   if (!ui.is_empty()) {
-    encodeManager.writeUpdate(ui, server->getPixelBuffer(), cursor, maxUpdateSize);
+    encodeManager.writeUpdate(ui, server->screenLayout, server->getPixelBuffer(), cursor, maxUpdateSize);
     copypassed.clear();
-    gettimeofday(&lastRealUpdate, NULL);
+    gettimeofday(&lastRealUpdate, nullptr);
     losslessTimer.start(losslessThreshold);
 
     const unsigned ms = encodeManager.getEncodingTime();
@@ -1538,11 +1597,11 @@ void VNCSConnectionST::writeDataUpdate()
         bstats_total[BS_CPU_CLOSE]++;
     }
   } else {
-    encodeManager.writeLosslessRefresh(req, server->getPixelBuffer(),
+    encodeManager.writeLosslessRefresh(req, server->screenLayout, server->getPixelBuffer(),
                                        cursor, maxUpdateSize);
   }
 
-  writeRTTPing();
+ //  writeRTTPing();
 
   // The request might be for just part of the screen, so we cannot
   // just clear the entire update tracker.
@@ -1564,7 +1623,7 @@ void VNCSConnectionST::writeBinaryClipboard()
 
   writer()->writeBinaryClipboard(binaryClipboard);
 
-  gettimeofday(&lastClipboardOp, NULL);
+  gettimeofday(&lastClipboardOp, nullptr);
 }
 
 void VNCSConnectionST::screenLayoutChange(rdr::U16 reason)
@@ -1654,6 +1713,11 @@ void VNCSConnectionST::handleFrameStats(rdr::U32 all, rdr::U32 render)
   }
 
   frameTracking = false;
+}
+
+void VNCSConnectionST::keepAlive()
+{
+  // Keepalive traffic should not influence idle disconnect timers.
 }
 
 // setCursor() is called whenever the cursor has changed shape or pixel format.
@@ -1847,6 +1911,10 @@ void VNCSConnectionST::unixRelay(const char *name, const rdr::U8 *buf, const uns
       return;
     }
   }
+}
+
+void VNCSConnectionST::videoEncodersRequest(const std::vector<int32_t> &encoders) {
+    writer()->writeVideoEncoders(encoders);
 }
 
 void VNCSConnectionST::sendUnixRelayData(const char name[], const unsigned char *buf,
